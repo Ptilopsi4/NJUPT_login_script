@@ -1,9 +1,13 @@
 #!/bin/sh
 # ============================================================
-#  NJUPT Portal Auto Login — BusyBox Edition
+#  NJUPT Portal Auto Login — BusyBox Edition (AES protocol)
 # ============================================================
 #  Requires: busybox (ash, wget, printf, sed, grep, cut, head)
+#            openssl-util (for AES-ECB login encryption, apk add openssl-util)
 #            ip or ifconfig (for local IP detection)
+#
+#  当前 portal 协议 (v2026-08): 登录 data 整体用 AES-128-ECB(PKCS7) 加密,
+#  密钥 = apg_page_secret('5C1d5ad4dea0e8dd'), 放 ?params=. 需 openssl.
 #
 #  Setup:
 #    1. Set PASSWORD and ACCOUNTS_FILE below
@@ -68,6 +72,39 @@ enc_pwd() {
         _i=$((_i+1))
     done
     echo "$_o"
+}
+
+# --- AES-CBC (openssl) for portal login ------------------
+# 当前 portal 协议(v post-2026-08): 登录 data 用 AES-128-ECB/PKCS7 整体加密,
+# 密钥 = apg_page_secret('5C1d5ad4dea0e8dd'), 输出 base64, 放在 ?params=.
+# 依赖路由器的 openssl-util (apk add openssl-util).
+AES_KEY_HEX="35433164356164346465613065386464"   # hex('5C1d5ad4dea0e8dd')
+
+aes_enc() {   # $1=plaintext → base64 (AES-128-ECB, PKCS7, nosalt)
+    printf '%s' "$1" | openssl enc -aes-128-ecb -K "$AES_KEY_HEX" -nosalt 2>/dev/null \
+        | openssl base64 -A 2>/dev/null
+}
+
+# escape a string for embedding as a JSON string value
+json_esc() {  # $1=raw -> "$escaped" (stdout, no quotes)
+    _s=$1 _o="" _i=0 _l=${#_s}
+    while [ $_i -lt $_l ]; do
+        _c=${_s:$_i:1}
+        case "$_c" in
+            '"') _o="${_o}\\\"" ;;
+            '\\') _o="${_o}\\\\" ;;
+            *)   _o="${_o}${_c}" ;;
+        esac
+        _i=$((_i+1))
+    done
+    printf '%s' "$_o"
+}
+
+# URL-encode a query-str component. AES base64 output contains + / = which
+# break a query string if left raw (portal then fails to decrypt -> 认证出现异常).
+# Encode those (alnum / - _ . stay).
+url_enc() {   # $1=raw -> percent-encoded
+    printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g'
 }
 
 # --- HTTP -------------------------------------------------
@@ -152,6 +189,7 @@ get_config() {
 # --- One login attempt ------------------------------------
 # args: account password ip config(pi|pg|rc|lm)
 # exit: 0=ok 1=fail, failure reason on stderr
+# 当前协议: 整个 data 对象 JSON 后 AES-128-ECB(apg_page_secret) → ?params=
 try_login() {
     _acct="$1" _pwd="$2" _ip="$3" _cfg="$4"
 
@@ -164,48 +202,44 @@ try_login() {
     # prepend ",0," if not already present
     case "$_acct" in *,*) ;; *) _acct=",0,${_acct}" ;; esac
 
-    _key=$(getkey "$_ip")
     _cb="dr$(rand)$(rand)"
-    _ua="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    _b64ua=$(b64e "$_ua")
-    _b64acct=$(b64e "$_acct")
-    _b64pwd=$(b64e "$_pwd")
+    _ua="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/150.0.0.0 Safari/537.36 Edg/150.0.0.0"
+    _at=$(date +%s 2>/dev/null || echo 0)
 
-    # build encrypted params
-    set -- \
-        "callback"        "$_cb"              0 \
-        "login_method"    "$_lm"              0 \
-        "is_base64encode" "1"                 0 \
-        "user_account"    "$_b64acct"         0 \
-        "user_password"   "$_b64pwd"          0 \
-        "wlan_user_ip"    "$_ip"              0 \
-        "wlan_user_ipv6"  ""                  0 \
-        "wlan_user_mac"   "000000000000"      0 \
-        "wlan_vlan_id"    "0"                 0 \
-        "wlan_ac_ip"      ""                  0 \
-        "wlan_ac_name"    ""                  0 \
-        "authex_enable"   ""                  0 \
-        "jsVersion"       "4.5"               0 \
-        "terminal_type"   "1"                 0 \
-        "lang"            "zh-cn"             0 \
-        "user_agent"      "$_b64ua"           0 \
-        "enable_r3"       "0"                 0 \
-        "mac_type"        "0"                 0 \
-        "rcn"             "$_rc"              0 \
-        "operate"         "portal_login"      0 \
-        "business_type"   "1"                 0 \
-        "program_index"   "$_pi"              0 \
-        "page_index"      "$_pg"              0
+    # build JSON data object (values AES'd as one blob by portal)
+    _j=""
+    _j="${_j}\"apgTime\":${_at}000"
+    _j="${_j},\"callback\":\"$(json_esc "$_cb")\""
+    _j="${_j},\"login_method\":\"$(json_esc "$_lm")\""
+    _j="${_j},\"is_base64encode\":\"0\""
+    _j="${_j},\"user_account\":\"$(json_esc "$_acct")\""
+    _j="${_j},\"user_password\":\"$(json_esc "$_pwd")\""
+    _j="${_j},\"wlan_user_ip\":\"$(json_esc "$_ip")\""
+    _j="${_j},\"wlan_user_ipv6\":\"\""
+    _j="${_j},\"wlan_user_mac\":\"000000000000\""
+    _j="${_j},\"wlan_vlan_id\":\"0\""
+    _j="${_j},\"wlan_ac_ip\":\"\""
+    _j="${_j},\"wlan_ac_name\":\"\""
+    _j="${_j},\"authex_enable\":\"\""
+    _j="${_j},\"jsVersion\":\"4.5\""
+    _j="${_j},\"terminal_type\":\"1\""
+    _j="${_j},\"lang\":\"zh-cn\""
+    _j="${_j},\"user_agent\":\"$(json_esc "$_ua")\""
+    _j="${_j},\"enable_r3\":\"0\""
+    _j="${_j},\"mac_type\":\"0\""
+    _j="${_j},\"rcn\":\"$(json_esc "$_rc")\""
+    _j="${_j},\"operate\":\"portal_login\""
+    _j="${_j},\"business_type\":\"1\""
+    _j="${_j},\"program_index\":\"$(json_esc "$_pi")\""
+    _j="${_j},\"page_index\":\"$(json_esc "$_pg")\""
+    _j="{$_j}"
 
-    _params=""
-    while [ $# -ge 3 ]; do
-        _name="$1" _val="$2"; shift 3
-        _enc=$(enc_pwd "$_val" $_key)
-        _params="${_params}&${_name}=${_enc}"
-    done
+    # AES-encrypt the whole JSON → params (must URL-encode: base64 has +/=
+    _params=$(aes_enc "$_j")
+    [ -z "$_params" ] && { echo "aes failed" >&2; return 1; }
+    _params=$(url_enc "$_params")
 
-    _params="${_params}&encrypt=1&v=$(rand)&lang=zh"
-    _url="https://${HOST}:${PORT_HTTPS}/eportal/portal/login?${_params#&}"
+    _url="https://${HOST}:${PORT_HTTPS}/eportal/portal/login?callback=${_cb}&jsVersion=4.X&params=${_params}"
 
     _r=$(http_get "$_url")
     [ -z "$_r" ] && { echo "no response" >&2; return 1; }

@@ -1,0 +1,10 @@
+# 敏感/分析样本：含可逆解的账号密码或真实设备信息，不推公共仓库
+success_rq.txt
+failed_rq.txt
+
+# portal 前端逆向产物（可从 portal 页面重新下载）
+a40_v0807.js
+a41_v0807.js
+
+# 排查诊断文档（含真实 WAN IP/MAC/账号）
+DIAG_20260819_NONLOCAL.md
