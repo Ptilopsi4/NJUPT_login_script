@@ -15,16 +15,19 @@
 #    - 或显式设置 HOST_IP=10.10.244.11 绕过 DNS
 #
 #  Setup:
-#    1. Set PASSWORD and ACCOUNTS_FILE below (必填)
-#    2. Create account file (one account per line, skip # and empty)
+#    1. Set ACCOUNTS_FILE below (必填)
+#    2. Create accounts.csv: 每行一个账号, 格式 `账号,密码`
+#       - 密码含逗号/引号/空格 → 用双引号包裹: `账号,"pa,ss"`
+#       - 内部双引号用两个双引号转义: `账号,"pa""ss"`
+#       - 支持 CRLF 行尾(Windows 编辑保存); # 开头和空行被忽略
 #    3. crontab:
 #       * * * * * /path/to/login.sh >> /var/log/portal_login.log 2>&1
 # ============================================================
 
 # --- 显式配置 (必填/可选) -----------------------------------
-PASSWORD=""                                # 必填: 账号密码
-ACCOUNTS_FILE="/path/to/accounts.txt"      # 必填: 账号列表文件
+ACCOUNTS_FILE="/path/to/accounts.csv"      # 必填: 账号列表文件 (账号,密码)
 FORCE_IP=""                                # 可选: 强制指定登录 IP, 空=自动检测
+SRC_IF=""                                  # 可选: 绑定源网卡(curl --interface), 多网卡环境必填
 HOST="p.njupt.edu.cn"                      # portal 域名
 HOST_IP=""                                 # 可选: portal 直连 IP(绕过DNS), 空=用 HOST
 PORT_HTTPS=802                             # 认证 API HTTPS 端口
@@ -46,7 +49,7 @@ rand() {
 
 # --- URL-encode a query component (for password with special chars) ---
 url_enc() {   # $1=raw -> percent-encoded
-    printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/&/%26/g; s/ /%20/g'
+    printf '%s' "$1" | sed 's/%/%25/g; s/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/&/%26/g; s/ /%20/g; s/#/%23/g; s/"/%22/g; s/,/%2C/g; s/	/%09/g'
 }
 
 # --- Base64 (pure shell) — 用于 loadConfig 的 wlan_user_ip ---
@@ -93,6 +96,42 @@ json_esc() {  # $1=raw -> escaped (stdout, no quotes), 用于 JSON 字符串
     printf '%s' "$_o"
 }
 
+# --- CSV 字段切分 (RFC 4180 简化版) --------------------------
+# 处理引号包裹(逗号/引号/空格)、"" 转义、CRLF 行尾;
+# 每行输出: 字段个数<US>字段1<US>字段2<US>... (US=\x1f, 输出分隔符)
+# 引号未闭合 / 闭引号后跟非法字符 → stderr + return 1
+csv_row() {   # $1=一行记录 → stdout: N<US>f1<US>f2<US>... (US=\x1f, 输出分隔符)
+    _l=$(printf '%s' "$1" | tr -d '\r')
+    _n=0 _o="" _f=""
+    _sep=$(printf '\037')
+    while [ -n "$_l" ]; do
+        case "$_l" in
+            '"'*)  # 引号包裹字段 (支持 "" 转义)
+                   _l=${_l#\"} _in=1
+                   while [ -n "$_l" ]; do
+                       case "$_l" in
+                           '""'*) _f="${_f}\""; _l=${_l#\"\"} ;;
+                           '"'*)  _in=0; _l=${_l#\"}; break ;;
+                           *)     _f="${_f}${_l%"${_l#?}"}"; _l=${_l#?} ;;
+                       esac
+                   done
+                   [ $_in -eq 0 ] || { echo "csv_row: 引号未闭合" >&2; return 1; }
+                   case "$_l" in
+                       ,*|'') ;;
+                       *) echo "csv_row: 闭引号后出现非法字符" >&2; return 1 ;;
+                   esac ;;
+            ,*)    # 分隔符: 提交当前字段并重置
+                   _n=$((_n+1)); _o="${_o}${_f}${_sep}"
+                   _f=""; _l=${_l#,} ;;
+            *)     # 裸字符
+                   _f="${_f}${_l%"${_l#?}"}"; _l=${_l#?} ;;
+        esac
+    done
+    _n=$((_n+1)); _o="${_o}${_f}"
+    echo "${_n}${_sep}${_o}"
+    return 0
+}
+
 # --- 依赖检测 (缺失即明确报错退出, 不静默) ------------------
 check_deps() {
     _err=""
@@ -125,10 +164,15 @@ check_deps() {
 
 # --- HTTP -------------------------------------------------
 # 按 HTTP_CLIENT 请求; https 失败降级 http; 失败时明确 stderr
+# 多网卡环境用 SRC_IF 绑定源接口(否则流量可能从错误网卡发出, portal 拒绝)
+_src_if() {   # stdout: "--interface <if>" 或空
+    [ -n "$SRC_IF" ] && echo "--interface ${SRC_IF}"
+}
 http_get() {
     _url="$1"
+    _si=$(_src_if)
     case "$HTTP_CLIENT" in
-        curl) _r=$(curl -sk --max-time 10 "$_url" 2>/dev/null) ;;
+        curl) _r=$(curl -sk --noproxy '*' --max-time 10 $_si "$_url" 2>/dev/null) ;;
         wget) _r=$(wget -qO- -T 10 "$_url" 2>/dev/null) ;;
         *) echo "ERROR http_get: HTTP_CLIENT 未设置" >&2; return 1 ;;
     esac
@@ -137,7 +181,7 @@ http_get() {
         _http=$(echo "$_url" | sed "s|https://${_PORTAL_HOST}:${PORT_HTTPS}|http://${_PORTAL_HOST}:${PORT_HTTP}|")
         if [ "$_http" != "$_url" ]; then
             case "$HTTP_CLIENT" in
-                curl) _r=$(curl -sk --max-time 10 "$_http" 2>/dev/null) ;;
+                curl) _r=$(curl -sk --noproxy '*' --max-time 10 $_si "$_http" 2>/dev/null) ;;
                 wget) _r=$(wget -qO- -T 10 "$_http" 2>/dev/null) ;;
             esac
         fi
@@ -271,6 +315,7 @@ try_login() {
         _url="https://${_PORTAL_HOST}:${PORT_HTTPS}/eportal/portal/login?callback=${_cb}&jsVersion=4.X&params=${_params}"
     else
         # ---- 明文协议 (8 字段 JSONP GET) ----
+        # 账号带 ,0, 前缀裸拼 (逗号在 query 中合法, 服务端按原样接收)
         _pwd_q=$(url_enc "$_pwd")
         _url="https://${_PORTAL_HOST}:${PORT_HTTPS}/eportal/portal/login?callback=${_cb}"
         _url="${_url}&user_account=${_acct}&user_password=${_pwd_q}"
@@ -314,34 +359,48 @@ main() {
         log "PROTOCOL plaintext"
     fi
 
-    # 5) 账号列表
+    # 5) 账号列表 (accounts.csv: 每行 `账号,密码`, CSV 转义规则见头部注释)
+    _sep=$(printf '\037')
     _total=0 _i=0 _ok=0
-    for _acc in $(grep -v '^#' "$ACCOUNTS_FILE" 2>/dev/null | grep -v '^$' | cut -d' ' -f1); do
+    while IFS='' read -r _line; do
+        case "$_line" in ''|\#*) continue ;; esac
+        case "$_line" in ' '*|'	'*) log "  WARN 忽略行首空白行: $(printf '%s' "$_line" | cut -c1-40)"; continue ;; esac
+        if ! _r=$(csv_row "$_line"); then
+            log "  WARN csv 解析失败: $(printf '%s' "$_line" | cut -c1-40)"
+            continue
+        fi
+        _n="${_r%%"$_sep"*}"
+        [ "$_n" -eq 2 ] || { log "  WARN 非两列(期望 账号,密码): $(printf '%s' "$_line" | cut -c1-40)"; continue; }
         _total=$((_total+1))
-    done
+    done < "$ACCOUNTS_FILE"
     [ "$_total" -eq 0 ] && { log "ERROR account list is empty: $ACCOUNTS_FILE"; return 1; }
 
     # 6) 尝试登录
-    for _acc in $(grep -v '^#' "$ACCOUNTS_FILE" 2>/dev/null | grep -v '^$' | cut -d' ' -f1); do
+    while IFS='' read -r _line; do
+        case "$_line" in ''|\#*) continue ;; esac
+        case "$_line" in ' '*|'	'*) continue ;; esac
+        _r=$(csv_row "$_line") || continue
+        _n="${_r%%"$_sep"*}"; _rest="${_r#*"$_sep"}"
+        [ "$_n" -eq 2 ] || continue
+        _acc="${_rest%%"$_sep"*}"; _pwd="${_rest#*"$_sep"}"
         _i=$((_i+1))
-        _short=$(echo "$_acc" | cut -c1-4)
+        _short=$(printf '%s' "$_acc" | cut -c1-4)
         log "[${_i}/${_total}] trying ${_short}***"
 
-        _err=$(try_login "$_acc" "$PASSWORD" "$_ip" "$_cfg" 2>&1)
+        _err=$(try_login "$_acc" "$_pwd" "$_ip" "$_cfg" 2>&1)
         if [ $? -eq 0 ]; then
             log "  OK login success: $_acc"
             _ok=1
             break
         fi
         log "  FAIL ${_err:-request failed}"
-    done
+    done < "$ACCOUNTS_FILE"
 
     [ "$_ok" -eq 0 ] && log "ERROR all ${_total} accounts failed"
     return 0
 }
 
 # --- 启动校验 (显式配置, 不静默) ---------------------------
-[ -z "$PASSWORD" ] && { echo "$(now) ERROR PASSWORD not set, edit script"; exit 1; }
 [ -z "$ACCOUNTS_FILE" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
-[ "$ACCOUNTS_FILE" = "/path/to/accounts.txt" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
+[ "$ACCOUNTS_FILE" = "/path/to/accounts.csv" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
 main

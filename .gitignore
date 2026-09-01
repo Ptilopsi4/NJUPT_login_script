@@ -2,6 +2,10 @@
 success_rq.txt
 failed_rq.txt
 
+# 账号密码文件（含明文凭据，不入库）
+accounts.csv
+accounts.txt
+
 # portal 前端逆向产物（可从 portal 页面重新下载）
 a40_v0807.js
 a41_v0807.js
