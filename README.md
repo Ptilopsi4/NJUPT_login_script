@@ -10,6 +10,18 @@
 
 ## 部署
 
+### 0. 依赖
+
+脚本需要 `curl`（或 `wget`）、`openssl`、`ip`/`ifconfig`、`sed`/`grep`/`tr` 等。
+
+> **ImmortalWrt / OpenWrt (apk 包管理)**：openssl 被拆分为 `libopenssl3`（库）+ `openssl-util`（CLI），路由器默认只有库没有 CLI。需安装：
+>
+> ```sh
+> apk add openssl-util
+> ```
+>
+> 验证：`echo -n test | openssl enc -aes-128-ecb -K 35433164356164346465613065386464 -nosalt | openssl base64 -A` 应输出非空密文。
+
 ### 1. 配置
 
 编辑 `portal_login.sh` 顶部：
