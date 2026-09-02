@@ -3,7 +3,7 @@
 #  NJUPT Portal Auto Login — POSIX sh / BusyBox (dual-protocol)
 # ============================================================
 #  Requires: sh, curl 或 wget, openssl, sed/grep/head/cut/date/printf,
-#            OpenWrt 的 ubus/jsonfilter，或 ip/ifconfig
+#            ip 或 ifconfig；OpenWrt 还可选用 ubus/jsonfilter（用于更可靠的上联接口取址）
 #
 #  协议: portal 在 AES(apg_page_secret, rcn 存在) 与明文 JSONP(无 rcn)
 #        之间切换, 脚本启动时经 loadConfig 探测, 自动选择.
@@ -23,7 +23,7 @@
 
 # --- 显式配置 (必填/可选) -----------------------------------
 PASSWORD=""                                # 必填: 账号密码
-ACCOUNTS_FILE="/path/to.accounts.txt"      # 必填: 账号列表文件
+ACCOUNTS_FILE="/path/to/accounts.txt"      # 必填: 账号列表文件
 FORCE_IP=""                                # 可选: 强制指定登录 IP, 空=自动检测
 HOST="p.njupt.edu.cn"                      # portal 域名
 HOST_IP=""                                 # 可选: portal 直连 IP(绕过DNS), 空=用 HOST
