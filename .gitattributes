@@ -1,0 +1,2 @@
+# 强制 shell 脚本使用 LF 行尾 (否则 core.autocrlf 会把它们转成 CRLF, bash 报 `\r` 错误)
+*.sh text eol=lf

@@ -182,3 +182,31 @@ page_data_encrypt = '1' // 页面传输加密开关
 
 - `wifidog/disconnect`
 - `page/loadConfig`
+
+### 13. 在线会话查询 (2026-09-01 实测)
+
+```
+GET /eportal/portal/online_list
+  user_account=  user_password=  wlan_user_mac=<大写MAC>
+  wlan_user_ip=<base64(ip)>  wlan_user_ipv6=<base64(ipv6)>  jsVersion=4.X
+```
+
+返回 `{"result":1,"list":[{...}]}`，含 `online_ip` / `user_account` / `online_mac` / `online_session`。
+
+### 14. 认证错误码 (2026-09-01 实测)
+
+| 响应 msg | 含义 |
+|----------|------|
+| `Portal协议认证成功！` (result:1) | 登录成功 |
+| `认证操作非本机终端！` | 请求源 IP ≠ 声明的 `wlan_user_ip`（多网卡流量从错误网卡发出） |
+| `AC999` (ret_code:2) | 账号**已在线**重复登录（本 IP 已有该账号会话） |
+| `从Radius获取错误代码失败！` (ret_code:1) | 登出后立即重登，Radius 会话未释放（等几秒） |
+| `Radius注销成功！` | 登出成功 |
+
+### 15. Windows 多网卡环境实测要点 (2026-09-01)
+
+- 本机 WLAN `10.162.231.154` + 以太网 `192.168.1.211` + Tailscale 并存，默认路由双出口
+- `p.njupt.edu.cn` **DNS 解析失败**，必须用 `HOST_IP=10.10.244.11` 直连
+- 请求必须 `--interface` 绑定 WLAN 源 IP，否则 portal 以「非本机终端」拒绝
+- curl 需 `--noproxy '*'` 绕过本机代理（Clash 等），否则走代理出口
+- 测试账号密码统一 `abc123456+`，账号 20130512 实测登录成功
