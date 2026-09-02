@@ -10,6 +10,21 @@
 
 ## 部署
 
+### OpenWrt
+
+新增 OpenWrt 适配：脚本会通过 `ubus/jsonfilter` 读取
+`OPENWRT_INTERFACE` 指定的上联接口，避免误用 LAN 地址。
+
+若提示缺少 `openssl`，安装 `openssl-util`：
+
+```sh
+# OpenWrt 24.10 及更早版本
+opkg update && opkg install openssl-util
+
+# OpenWrt 25.12 及更新版本
+apk -U add openssl-util
+```
+
 ### 1. 配置
 
 编辑 `portal_login.sh` 顶部：
@@ -18,6 +33,7 @@
 PASSWORD="你的密码"
 ACCOUNTS_FILE="/path/to/accounts.txt"
 FORCE_IP=""              # 可选：强制指定 IP
+OPENWRT_INTERFACE="wan" # OpenWrt 上联逻辑接口名
 ```
 
 ### 2. 账号文件
@@ -72,13 +88,13 @@ cron 每分钟触发:
   └─ 全部失败 → 记录日志并 exit 0
 ```
 
-### 5. 纯 shell 实现要点
+### 5. Shell 实现要点
 
-| 功能 | 仅用 busybox |
-|------|-------------|
-| Base64 | `printf '%d' "'$c"` + 位运算 + B64 字符表索引 |
-| XOR 加密 | `$((asc ^ key))` + `printf '%02x'` |
+| 功能 | 实现 |
+|------|------|
+| Shell 兼容 | 避免 Bash 字符串切片，可由 BusyBox `ash`、`dash`、`bash` 执行 |
+| Base64 | 复用 AES 已依赖的 `openssl base64 -A` |
 | HTTP | `wget -qO- -T 10`，HTTPS→HTTP 自动降级 |
 | JSON 解析 | `sed -n 's/.*"key":"\([^"]*\)".*/\1/p'` |
-| IP 检测 | `ip -4 -o addr show` + `ifconfig` |
+| IP 检测 | OpenWrt 使用 `ubus/jsonfilter`；普通 Linux 使用默认路由、`ip` 或 `ifconfig` |
 | 随机数 | `($$ * 1103515245 + date +%s) % 9500 + 500` |
