@@ -1,9 +1,9 @@
 #!/bin/sh
 # ============================================================
-#  NJUPT Portal Auto Login — BusyBox Edition (dual-protocol)
+#  NJUPT Portal Auto Login — POSIX sh / BusyBox (dual-protocol)
 # ============================================================
 #  Requires: sh, curl 或 wget, openssl, sed/grep/head/cut/date/printf,
-#            ip 或 ifconfig
+#            ip 或 ifconfig；OpenWrt 还可选用 ubus/jsonfilter（用于更可靠的上联接口取址）
 #
 #  协议: portal 在 AES(apg_page_secret, rcn 存在) 与明文 JSONP(无 rcn)
 #        之间切换, 脚本启动时经 loadConfig 探测, 自动选择.
@@ -30,8 +30,8 @@ HOST_IP=""                                 # 可选: portal 直连 IP(绕过DNS)
 PORT_HTTPS=802                             # 认证 API HTTPS 端口
 PORT_HTTP=803                              # 降级 HTTP 端口
 HTTP_CLIENT=""                             # 可选: 显式 "curl" 或 "wget"; 空=自动检测(优先curl)
+OPENWRT_INTERFACE="wan"                    # OpenWrt 上联网的逻辑接口名，例如 wan/wwan/eth0.x
 AES_KEY_HEX="35433164356164346465613065386464"   # apg_page_secret 的 hex('5C1d5ad4dea0e8dd')
-B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
 
 # 解析用主机 (HOST_IP 优先, 绕过 DNS)
 _PORTAL_HOST="${HOST_IP:-$HOST}"
@@ -49,24 +49,13 @@ url_enc() {   # $1=raw -> percent-encoded
     printf '%s' "$1" | sed 's/+/%2B/g; s/\//%2F/g; s/=/%3D/g; s/&/%26/g; s/ /%20/g'
 }
 
-# --- Base64 (pure shell) — 用于 loadConfig 的 wlan_user_ip ---
+# --- Base64 — 用于 loadConfig 的 wlan_user_ip ----------------
+# openssl 已是 AES 协议的必需依赖；复用它可避免非 POSIX 的字符串切片，
+# 从而同时兼容 BusyBox ash、dash 和 bash。
 b64e() {
-    _s="$1" _l=${#_s} _i=0 _o=""
-    while [ $_i -lt $_l ]; do
-        _b1=$(printf '%d' "'${_s:$_i:1}"); _i=$((_i+1))
-        if [ $_i -ge $_l ]; then
-            _o="${_o}${B64:$((_b1>>2)):1}${B64:$(((_b1&3)<<4)):1}=="
-            break
-        fi
-        _b2=$(printf '%d' "'${_s:$_i:1}"); _i=$((_i+1))
-        if [ $_i -ge $_l ]; then
-            _o="${_o}${B64:$((_b1>>2)):1}${B64:$((((_b1&3)<<4)|(_b2>>4))):1}${B64:$(((_b2&15)<<2)):1}="
-            break
-        fi
-        _b3=$(printf '%d' "'${_s:$_i:1}"); _i=$((_i+1))
-        _o="${_o}${B64:$((_b1>>2)):1}${B64:$((((_b1&3)<<4)|(_b2>>4))):1}${B64:$((((_b2&15)<<2)|(_b3>>6))):1}${B64:$((_b3&63)):1}"
-    done
-    echo "$_o"
+    _out=$(printf '%s' "$1" | openssl base64 -A 2>/dev/null) \
+        || { echo "ERROR b64e: openssl base64 失败" >&2; return 1; }
+    printf '%s\n' "$_out"
 }
 
 # --- AES-ECB (openssl) — portal AES 协议用 ---
@@ -80,17 +69,7 @@ aes_enc() {   # $1=plaintext → base64 (AES-128-ECB, PKCS7); 失败时 stderr +
     return 0
 }
 json_esc() {  # $1=raw -> escaped (stdout, no quotes), 用于 JSON 字符串
-    _s=$1 _o="" _i=0 _l=${#_s}
-    while [ $_i -lt $_l ]; do
-        _c=${_s:$_i:1}
-        case "$_c" in
-            '"') _o="${_o}\\\"" ;;
-            '\\') _o="${_o}\\\\" ;;
-            *)   _o="${_o}${_c}" ;;
-        esac
-        _i=$((_i+1))
-    done
-    printf '%s' "$_o"
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 # --- 依赖检测 (缺失即明确报错退出, 不静默) ------------------
@@ -173,8 +152,26 @@ check_net() {
 get_ip() {
     [ -n "$FORCE_IP" ] && { echo "$FORCE_IP"; return 0; }
 
-    # ip addr (prefer tun interfaces)
+    # OpenWrt: 优先读取 netifd 的上联逻辑接口，避免误取 br-lan 的
+    # 192.168.1.1。ubus/jsonfilter 都是 OpenWrt 基础组件。
+    if command -v ubus >/dev/null 2>&1 && command -v jsonfilter >/dev/null 2>&1; then
+        _ip=$(ubus call "network.interface.${OPENWRT_INTERFACE}" status 2>/dev/null \
+            | jsonfilter -e '@["ipv4-address"][0].address' 2>/dev/null \
+            | head -1)
+        case "$_ip" in 127.*|'') ;; *) echo "$_ip"; return 0 ;; esac
+    fi
+
+    # Linux/OpenWrt fallback: 默认路由对应网卡的 IPv4 地址
     if command -v ip >/dev/null 2>&1; then
+        _line=$(ip -4 route show default 2>/dev/null | head -1)
+        _dev=${_line##* dev }; _dev=${_dev%% *}
+        if [ -n "$_dev" ] && [ "$_dev" != "$_line" ]; then
+            _line=$(ip -4 -o addr show dev "$_dev" 2>/dev/null | head -1)
+            _line=${_line##*inet }; _ip=${_line%%/*}
+            case "$_ip" in 127.*|'') ;; *) echo "$_ip"; return 0 ;; esac
+        fi
+
+        # VPN 场景兼容
         for _if in utun tun0 singtun; do
             _line=$(ip -4 -o addr show dev "$_if" 2>/dev/null | head -1)
             [ -z "$_line" ] && continue
@@ -182,8 +179,8 @@ get_ip() {
             case "$_ip" in 127.*|'') continue ;; esac
             echo "$_ip"; return 0
         done
-        # fallback: any non-lo / non-docker private IP
-        _line=$(ip -4 -o addr show 2>/dev/null | grep -v ' lo \|docker\|br-' | head -1)
+        # 最后才选择任意非 LAN/容器地址
+        _line=$(ip -4 -o addr show 2>/dev/null | grep -v ' lo \|docker\|br-\|br-lan' | head -1)
         _line=${_line##*inet }; _ip=${_line%%/*}
         case "$_ip" in 127.*|172.17.*|'') ;; *) echo "$_ip"; return 0 ;; esac
     fi
@@ -327,8 +324,7 @@ main() {
         _short=$(echo "$_acc" | cut -c1-4)
         log "[${_i}/${_total}] trying ${_short}***"
 
-        _err=$(try_login "$_acc" "$PASSWORD" "$_ip" "$_cfg" 2>&1)
-        if [ $? -eq 0 ]; then
+        if _err=$(try_login "$_acc" "$PASSWORD" "$_ip" "$_cfg" 2>&1); then
             log "  OK login success: $_acc"
             _ok=1
             break
