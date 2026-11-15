@@ -28,10 +28,11 @@ FORCE_IP=""                                # 可选: 强制指定登录 IP, 空=
 HOST="p.njupt.edu.cn"                      # portal 域名
 HOST_IP=""                                 # 可选: portal 直连 IP(绕过DNS), 空=用 HOST
 PORT_HTTPS=802                             # 认证 API HTTPS 端口
-PORT_HTTP=803                              # 降级 HTTP 端口
+PORT_HTTP=801                              # 降级 HTTP 端口 (权威值: loadConfig ep_http_port)
 HTTP_CLIENT=""                             # 可选: 显式 "curl" 或 "wget"; 空=自动检测(优先curl)
 AES_KEY_HEX="35433164356164346465613065386464"   # apg_page_secret 的 hex('5C1d5ad4dea0e8dd')
 B64="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
 
 # 解析用主机 (HOST_IP 优先, 绕过 DNS)
 _PORTAL_HOST="${HOST_IP:-$HOST}"
@@ -150,17 +151,18 @@ http_get() {
     return 0
 }
 
+
 # --- Connectivity check -----------------------------------
 check_net() {
     # fetch baidu — if portal redirect detected, net is blocked
     log "checking internet connectivity..."
-    _r=$(http_get "https://www.baidu.com" 2>/dev/null | head -c 200)
+    _r=$(http_get "http://www.baidu.com" 2>/dev/null | head -c 200)
     if [ -z "$_r" ]; then
         log "  OFFLINE no response from baidu"
         return 1
     fi
     case "$_r" in
-        *eportal*|*njupt*|*portal*)
+        *eportal*|*Authentication*|*a79.htm*|*10.10.244.11*|*njupt*|*portal*)
             log "  OFFLINE portal redirect detected"
             return 1 ;;
         *)
@@ -304,6 +306,7 @@ main() {
     # 3) IP
     _ip=$(get_ip) || { log "ERROR cannot detect IP"; return 1; }
     log "IP=$_ip"
+
 
     # 4) 协议探测
     _cfg=$(get_config "$_ip") || { log "ERROR loadConfig 失败"; return 1; }

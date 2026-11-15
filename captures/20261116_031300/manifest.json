@@ -1,0 +1,15 @@
+{
+  "captured_at": "2026-11-16 03:13:00",
+  "wlan_user_ip": "10.161.211.150",
+  "hash_algo": "sha256",
+  "page_url": "https://p.njupt.edu.cn:802/eportal/index.jsp",
+  "page_hash": "735a90656dec3cb6a3ed52a0419e5bf8ee64f036617ade8152cb2ff64b73dda3",
+  "jsVersion": "unknown",
+  "files": {
+    "page.html": "735a90656dec3cb6a3ed52a0419e5bf8ee64f036617ade8152cb2ff64b73dda3",
+    "loadConfig.txt": "94018888a52c05f200c6f1bbb3b3a780da3cb2f49a67538851b445523c1852e3"
+  },
+  "js_sources": [
+
+  ]
+}

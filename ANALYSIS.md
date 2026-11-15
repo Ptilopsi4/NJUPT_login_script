@@ -182,3 +182,61 @@ page_data_encrypt = '1' // 页面传输加密开关
 
 - `wifidog/disconnect`
 - `page/loadConfig`
+
+---
+
+# 2026-11 协议现状: 双轨明文 (基于 a41.js/a40.js v1783574036093)
+
+> 取证来源: captures/20261116_032100.7457 (劫持页→a79.htm 链路) +
+> reference/20261116/ (干净样本, curl --compressed 直拉)。
+> 旧章节描述的 XOR/getkey 加密体系已随旧版前端退役。
+
+## 架构
+
+```
+劫持: 访问外网 → 200 + location.href → http://10.10.244.11/a79.htm (非 302)
+a79.htm: Drcom 壳页, 内联明文配置(端点/字段名/运营商表) + fileVersion
+a41.js (38KB): 编排器 — loadConfig/checkStatus/perceive + util(_jsonp/base64/ipToParseInt)
+a40.js (166KB): 业务 — login/logout/online_list/改密/自服务, isJSMin=1 单体加载
+```
+
+## 双轨登录 API (并存)
+
+| | drcom 内核轨 (login_method=0) | eportal JSONP 轨 (login_method=1, 当前线上) |
+|---|---|---|
+| 端点 | `http://10.10.244.11/drcom/login` | `https://p.njupt.edu.cn:802/eportal/portal/login` |
+| 账号字段 | `DDDDD` | `user_account` |
+| 密码字段 | `upass` (en_md5=1 时 MD5(PID+pwd+CALG)+CALG+PID) | `user_password` (**明文**, en_md5=0) |
+| 特征参数 | `0MKKey=123456`, R1/R2/R3/R6/R7/R10, para, v6ip | login_method/terminal_type/lang/jsVersion |
+| 响应 | JSONP `dr<N>` callback | 同左 |
+
+- NJUPT 当前 loadConfig: `login_method=1`, `en_md5=0` → eportal 轨明文 JSONP
+- login.sh 明文分支与 `login.login_portal` 参数表同构 (端点/字段对齐), 故前端换代不影响脚本
+
+## 注销协议
+
+```
+GET /eportal/portal/logout
+    callback=dr<N>&login_method=1
+    &user_account=drcom&user_password=123      ← 固定凭据, 服务端按 IP/MAC 鉴权
+    &ac_logout=<0|1>&register_mode=<n>
+    &wlan_user_ip=<ip>&wlan_user_ipv6=&wlan_vlan_id=<vlan>
+    &wlan_user_mac=<mac>&wlan_ac_ip=&wlan_ac_name=&jsVersion=<v>
+```
+
+`ac_logout`(loadConfig)=1 → Radius 注销。旧版 `wifidog/disconnect` 在加密白名单中残留, 新前端已不用。
+
+## 其他端点 (a41/a40 全集)
+
+| 端点 | 用途 |
+|---|---|
+| `eportal/portal/page/loadConfig` | 页面配置 (b64(ip), 不加密) |
+| `drcom/chkstatus` | 在线状态 (login_method=0) |
+| `eportal/portal/online_list` | 在线状态 (check_online_method=1, **IP 转十进制整数** ipToParseInt) |
+| `eportal/portal/perceive` | 无感知认证 |
+| `eportal/portal/visitor/checkUserStateByIP` | 访客 IP 状态 |
+| `eportal/portal/login/logout` | 登录/注销 |
+
+## 运营商后缀 (a79.htm carrier 配置)
+
+`""`=校园用户(默认) / `@dx`=电信 / `@lt`=联通 — 账号池轮换时后缀须与运营商匹配, 不匹配是轮换失败的候选根因。
