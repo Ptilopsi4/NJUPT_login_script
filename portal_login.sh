@@ -347,4 +347,10 @@ main() {
 [ -z "$PASSWORD" ] && { echo "$(now) ERROR PASSWORD not set, edit script"; exit 1; }
 [ -z "$ACCOUNTS_FILE" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
 [ "$ACCOUNTS_FILE" = "/path/to/accounts.txt" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
+
+# --- 单飞锁: 慢路径可超 60s(cron 每分钟), 防自叠加并发;
+#     mac_rotate 主动调用同样经此互斥. fd 锁随进程退出自动释放, 无死锁
+exec 9>/tmp/portal_login.lock
+flock -n 9 || { echo "$(now) another login instance running, skip this tick"; exit 0; }
+
 main
