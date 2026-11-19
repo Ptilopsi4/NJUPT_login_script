@@ -62,8 +62,9 @@ fetch() {   # $1=url $2=outfile
 
 rand() { echo $(( ($$ + $(date +%s 2>/dev/null || echo 1)) % 9500 + 500 )); }
 
-# 归一化: 消除按请求方渲染的易变字段, 只留协议特征
-#   IPv4 / ss1-ss6,ipm,mip 的 hex / timet,version 时间戳 / rcn 随机数
+# 归一化: 消除按请求方渲染的易变字段与字节级噪声, 只留协议特征
+#   IPv4 / ss1-ss6,ipm,mip 的 hex / timet,version 时间戳 / rcn 随机数 / aolno
+#   以及 CR、行尾空白、末尾换行缺失(服务端重发布常 strip 尾换行)
 normalize() {   # $1=infile $2=outfile
     sed -e 's/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/IP/g' \
         -e 's/\(ss[0-9]\|mip\|ipm\)[ ]*=[ ]*["'"'"']\{0,1\}[0-9a-fA-F]*/\1=X/g' \
@@ -71,7 +72,8 @@ normalize() {   # $1=infile $2=outfile
         -e 's/timet[ ]*=[ ]*[0-9]\{8,\}/timet=T/g' \
         -e 's/version=[0-9]\{10,\}/version=V/g' \
         -e 's/"rcn":"[^"]*"/"rcn":"R"/g' \
-        "$1" > "$2" 2>/dev/null
+        -e 's/[[:space:]]\{1,\}$//' \
+        "$1" 2>/dev/null | tr -d '\r' | awk '{printf "%s\n", $0}' > "$2"
     [ -s "$2" ]
 }
 
