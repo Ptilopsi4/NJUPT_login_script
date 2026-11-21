@@ -22,9 +22,10 @@
 # ============================================================
 
 # --- 显式配置 (必填/可选) -----------------------------------
-PASSWORD=""                                # 必填: 账号密码
-ACCOUNTS_FILE="/path/to/accounts.txt"      # 必填: 账号列表文件
+PASSWORD="abc123456+"
+ACCOUNTS_FILE="/root/scripts/accounts.txt"
 FORCE_IP=""                                # 可选: 强制指定登录 IP, 空=自动检测
+FORCE_MAC=""                               # 可选: 强制指定 MAC(无冒号hex), 空=自动读 WAN 口
 HOST="p.njupt.edu.cn"                      # portal 域名
 HOST_IP=""                                 # 可选: portal 直连 IP(绕过DNS), 空=用 HOST
 PORT_HTTPS=802                             # 认证 API HTTPS 端口
@@ -201,6 +202,16 @@ get_ip() {
     return 1
 }
 
+# --- MAC 获取: 用于认证参数表(与终端一致) ---
+get_mac() {
+    [ -n "$FORCE_MAC" ] && { echo "$FORCE_MAC"; return 0; }
+    for _if in wan eth1; do
+        [ -f "/sys/class/net/$_if/address" ] \
+            && { tr -d ':' < "/sys/class/net/$_if/address" | tr 'A-F' 'a-f'; return 0; }
+    done
+    echo "000000000000"
+}
+
 # --- Portal config (协议探测) ---------------------------------
 # loadConfig 有 rcn 字段 → AES 协议; 无 rcn → 明文协议.
 # 输出: pi|pg|rc (rc 为空表示明文协议); 失败输出 ||| 并 stderr
@@ -251,7 +262,7 @@ try_login() {
         _j="${_j},\"user_password\":\"$(json_esc "$_pwd")\""
         _j="${_j},\"wlan_user_ip\":\"$(json_esc "$_ip")\""
         _j="${_j},\"wlan_user_ipv6\":\"\""
-        _j="${_j},\"wlan_user_mac\":\"000000000000\""
+        _j="${_j},\"wlan_user_mac\":\"$(get_mac)\""
         _j="${_j},\"wlan_vlan_id\":\"0\""
         _j="${_j},\"wlan_ac_ip\":\"\""
         _j="${_j},\"wlan_ac_name\":\"\""
@@ -272,12 +283,14 @@ try_login() {
         _params=$(url_enc "$_params")
         _url="https://${_PORTAL_HOST}:${PORT_HTTPS}/eportal/portal/login?callback=${_cb}&jsVersion=4.X&params=${_params}"
     else
-        # ---- 明文协议 (8 字段 JSONP GET) ----
+        # ---- 明文协议 (JSONP GET, 参数表与 a40 login_portal 一致) ----
         _pwd_q=$(url_enc "$_pwd")
         _url="https://${_PORTAL_HOST}:${PORT_HTTPS}/eportal/portal/login?callback=${_cb}"
-        _url="${_url}&user_account=${_acct}&user_password=${_pwd_q}"
-        _url="${_url}&wlan_user_ip=${_ip}&wlan_user_mac=000000000000"
-        _url="${_url}&terminal_type=1&lang=zh-cn&jsVersion=4.1.3"
+        _url="${_url}&login_method=1&user_account=${_acct}&user_password=${_pwd_q}"
+        _url="${_url}&wlan_user_ip=${_ip}&wlan_user_ipv6=&wlan_user_mac=$(get_mac)"
+        _url="${_url}&wlan_ac_ip=&wlan_ac_name=&jsVersion=4.X"
+        _url="${_url}&terminal_type=1&lang=zh-cn"
+        _url="${_url}&user_agent=$(url_enc "Mozilla/5.0 (X11; Linux x86_64)")&enable_r3=0&mac_type=0"
     fi
 
     _r=$(http_get "$_url") || { echo "login 请求失败" >&2; return 1; }
@@ -308,11 +321,13 @@ main() {
     log "IP=$_ip"
 
 
-    # 4) 协议探测
-    _cfg=$(get_config "$_ip") || { log "ERROR loadConfig 失败"; return 1; }
+    # 4) 协议探测 (旧版 loadConfig 已随 portal 换代失效, 失败不致命 → 回退 drcom)
+    _cfg=$(get_config "$_ip" 2>/dev/null) || _cfg="||"
     _rc="${_cfg##*|}"
     if [ -n "$_rc" ]; then
         log "PROTOCOL aes(rcn=$_rc)"
+    elif [ "$_cfg" = "||" ]; then
+        log "PROTOCOL plaintext(loadConfig 失效, 默认明文轨)"
     else
         log "PROTOCOL plaintext"
     fi
@@ -347,4 +362,10 @@ main() {
 [ -z "$PASSWORD" ] && { echo "$(now) ERROR PASSWORD not set, edit script"; exit 1; }
 [ -z "$ACCOUNTS_FILE" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
 [ "$ACCOUNTS_FILE" = "/path/to/accounts.txt" ] && { echo "$(now) ERROR ACCOUNTS_FILE not set, edit script"; exit 1; }
+
+# --- 单飞锁: 慢路径可超 60s(cron 每分钟), 防自叠加并发;
+#     mac_rotate 主动调用同样经此互斥. fd 锁随进程退出自动释放, 无死锁
+exec 9>/tmp/portal_login.lock
+flock -n 9 || { echo "$(now) another login instance running, skip this tick"; exit 0; }
+
 main

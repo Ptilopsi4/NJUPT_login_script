@@ -102,6 +102,7 @@ portal 登录逻辑时常变动。以下三个组件互相独立、也独立于�
 |------|------|
 | `portal_login.sh` | 登录守护（核心，单独可用） |
 | `portal_probe.sh` / `portal_capture.sh` / `drift_check.sh` | 可选监测组件 |
+| `mac_rotate.sh` | WAN MAC 每日轮换（注销→换 MAC→重租→主动登录，:02s 对齐窗口） |
 | `ANALYSIS.md` | 协议逆向分析（双轨登录 API、注销协议、加密沿革） |
 | `reference/` | portal 前端样本（a41 编排层 + a40 业务层） |
 | `captures/` | 掉线取证存档 |

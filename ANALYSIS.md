@@ -240,3 +240,16 @@ GET /eportal/portal/logout
 ## 运营商后缀 (a79.htm carrier 配置)
 
 `""`=校园用户(默认) / `@dx`=电信 / `@lt`=联通 — 账号池轮换时后缀须与运营商匹配, 不匹配是轮换失败的候选根因。
+
+## eportal 轨参数要求
+
+明文 JSONP 轨要求 a40 login_portal 全参数表(字段缺失即被拒"认证出现异常"):
+
+`callback, login_method=1, user_account(,0,学号), user_password, wlan_user_ip, wlan_user_ipv6(可空), wlan_user_mac(无冒号hex), wlan_ac_ip/wlan_ac_name(可空), jsVersion, terminal_type, lang, user_agent, enable_r3, mac_type`
+
+服务端校验分层(按响应观测):
+
+1. **参数完整度** — 字段子集 → "认证出现异常"(多组变体复现)
+2. **终端/IP 校验** — "认证操作非本机终端"(触发条件未定因:
+   参数IP与来源IP不一致 / 来源IP已有在线会话, 两种机制未区分)
+3. **凭据** — 推断存在(未直接观测到该层响应)

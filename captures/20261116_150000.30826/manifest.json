@@ -1,0 +1,17 @@
+{
+  "captured_at": "2026-11-16 15:00:00",
+  "wlan_user_ip": "10.161.211.150",
+  "hash_algo": "sha256",
+  "page_url": "http://10.10.244.11/a79.htm",
+  "page_hash": "2fd15dd67d54528356225bc3bccfe2bf2de250c76ec396895664ac570f5beb33",
+  "jsVersion": "1783574036093",
+  "files": {
+    "page.html": "2fd15dd67d54528356225bc3bccfe2bf2de250c76ec396895664ac570f5beb33",
+    "hijack.html": "b03518d906b9220458d785f916ce7e9b80f573be56d4497706ed10a4a0a8ffef",
+    "loadConfig.txt": "b5a389d3bf86bbf657d7d9bc0b387e2273a4296c54a89db855e6c440dc718c5e",
+    "js/js1_a41.js": "79baca2869339759437dd9ecafb4c9e30f127b232a3621c09972d1f94626e0bb"
+  },
+  "js_sources": [
+    {"file": "js/js1_a41.js", "url": "http://10.10.244.11/a41.js?version=1783574036093"}
+  ]
+}

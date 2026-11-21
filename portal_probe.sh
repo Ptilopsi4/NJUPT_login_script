@@ -2,8 +2,8 @@
 # ============================================================
 #  portal_probe.sh — 在线巡检: portal 资源 drift 主动检测
 # ============================================================
-#  portal 的静态资源与 loadConfig 不鉴权(在线态可拉, 已实测
-#  58 字段与掉线态零差异), 故巡检不依赖掉线窗口, 每日主动采样:
+#  portal 的静态资源与 loadConfig 不鉴权, 在线态可拉,
+#  故巡检不依赖掉线窗口, 每日主动采样:
 #
 #    a79.htm   壳页: fileVersion/端点/字段名/运营商配置
 #    a41.js    编排器 / a40.js 业务逻辑
@@ -62,8 +62,9 @@ fetch() {   # $1=url $2=outfile
 
 rand() { echo $(( ($$ + $(date +%s 2>/dev/null || echo 1)) % 9500 + 500 )); }
 
-# 归一化: 消除按请求方渲染的易变字段, 只留协议特征
-#   IPv4 / ss1-ss6,ipm,mip 的 hex / timet,version 时间戳 / rcn 随机数
+# 归一化: 消除按请求方渲染的易变字段与字节级噪声, 只留协议特征
+#   IPv4 / ss1-ss6,ipm,mip 的 hex / timet,version 时间戳 / rcn 随机数 / aolno
+#   以及 CR、行尾空白、末尾换行缺失(服务端重发布常 strip 尾换行)
 normalize() {   # $1=infile $2=outfile
     sed -e 's/[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}/IP/g' \
         -e 's/\(ss[0-9]\|mip\|ipm\)[ ]*=[ ]*["'"'"']\{0,1\}[0-9a-fA-F]*/\1=X/g' \
@@ -71,7 +72,8 @@ normalize() {   # $1=infile $2=outfile
         -e 's/timet[ ]*=[ ]*[0-9]\{8,\}/timet=T/g' \
         -e 's/version=[0-9]\{10,\}/version=V/g' \
         -e 's/"rcn":"[^"]*"/"rcn":"R"/g' \
-        "$1" > "$2" 2>/dev/null
+        -e 's/[[:space:]]\{1,\}$//' \
+        "$1" 2>/dev/null | tr -d '\r' | awk '{printf "%s\n", $0}' > "$2"
     [ -s "$2" ]
 }
 
@@ -94,7 +96,26 @@ collect() {   # $1=目标目录; 全部成功 return 0
     return 0
 }
 
-# --- manifest: 归一化哈希 ------------------------------------
+# --- 行为指纹: 假IP+假凭据差分探针(用于检测后端校验逻辑变更) ---
+#   P_full 全参数表 / P_sub 子集参数, 响应语义见 ANALYSIS 校验顺序
+#   假 IP(192.0.2.1 TEST-NET)不触碰真实会话; 响应 (msg,ret_code) 入指纹
+PROBE_IP="192.0.2.1"
+PROBE_MAC="020000000001"
+behavior_probe() {   # $1=full|sub → 输出 "msg|ret_code"
+    _acct=",0,00000000" _pwd=$(printf 'Prob3X' | sed 's/X/%58/')
+    _base="http://${HOST_API:-$HOST}:801/eportal/portal/login?callback=dr_probe"
+    if [ "$1" = "full" ]; then
+        _u="${_base}&login_method=1&user_account=${_acct}&user_password=${_pwd}&wlan_user_ip=${PROBE_IP}&wlan_user_ipv6=&wlan_user_mac=${PROBE_MAC}&wlan_ac_ip=&wlan_ac_name=&jsVersion=4.X&terminal_type=1&lang=zh-cn&user_agent=probe&enable_r3=0&mac_type=0"
+    else
+        _u="${_base}&user_account=${_acct}&user_password=${_pwd}&wlan_user_ip=${PROBE_IP}&wlan_user_mac=000000000000&terminal_type=1&lang=zh-cn&jsVersion=4.1.3"
+    fi
+    _r=$(curl -sk --max-time 8 "$_u" 2>/dev/null)
+    _m=$(echo "$_r" | sed -n 's/.*"msg":"\([^"]*\)".*/\1/p' | head -1)
+    _c=$(echo "$_r" | sed -n 's/.*"ret_code":"\([^"]*\)".*/\1/p' | head -1)
+    echo "${_m:-no-msg}|${_c:-no-code}"
+}
+
+# --- manifest: 归一化哈希 + 行为指纹 ------------------------------------
 gen_manifest() {   # $1=目录
     _d="$1"
     {
@@ -102,6 +123,8 @@ gen_manifest() {   # $1=目录
         echo "a41=$(file_hash "$_d/a41.js")"
         echo "a40=$(file_hash "$_d/a40.js")"
         echo "loadConfig=$(file_hash "$_d/loadConfig.json")"
+        echo "behavior_full=$(behavior_probe full)"
+        echo "behavior_sub=$(behavior_probe sub)"
     } > "$_d/manifest" 2>/dev/null
 }
 
